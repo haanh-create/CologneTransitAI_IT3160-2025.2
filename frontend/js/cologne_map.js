@@ -5,14 +5,49 @@ let markers = {};
 let selectedStart = null;
 let selectedEnd = null;
 
-async function initCologneMap() {
-    map = L.map('map').setView([50.9375, 6.9603], 13); // Center of Cologne
+// Tile layers for dark/light mode
+window._darkTile  = null;
+window._lightTile = null;
+window._tileLayer = null;
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: 'abcd',
-        maxZoom: 20
-    }).addTo(map);
+// ===== Color by line_type (from backend classify_line) =====
+const LINE_COLORS = {
+    rail:  '#0085c8',   // xanh lam-lục  (Rail / named lines)
+    sub:   '#00c666',   // xanh lá       (Sub  / KVB Stadtbahn 1-99)
+    train: '#ffd600',   // vàng           (Train / regional 4-digit)
+};
+
+const INACTIVE_COLOR = '#3d444d';
+const PATH_COLOR     = '#f44336';   // đỏ — đường ngắn nhất
+
+function getLineTypeColor(lineType) {
+    return LINE_COLORS[lineType] || LINE_COLORS.sub;
+}
+
+// ===== Init Map =====
+async function initCologneMap() {
+    const savedTheme = localStorage.getItem('kvb-theme') || 'dark';
+
+    map = L.map('map', { zoomControl: true }).setView([50.9375, 6.9603], 13);
+
+    window._darkTile = L.tileLayer(
+        'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+        {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd', maxZoom: 20
+        }
+    );
+
+    window._lightTile = L.tileLayer(
+        'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+        {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+            subdomains: 'abcd', maxZoom: 20
+        }
+    );
+
+    window._tileLayer = savedTheme === 'dark' ? window._darkTile : window._lightTile;
+    window._tileLayer.addTo(map);
 
     try {
         await refreshNetwork();
@@ -22,134 +57,275 @@ async function initCologneMap() {
     }
 }
 
+// ===== Network =====
 async function refreshNetwork() {
     networkData = await TransitAPI.getNetwork();
     renderNetwork();
 }
 
 function renderNetwork() {
-    // Clear existing markers and layers
     Object.values(markers).forEach(m => m.remove());
     markers = {};
-    if (pathLayer) pathLayer.remove();
+    if (pathLayer) { pathLayer.remove(); pathLayer = null; }
 
-    // Draw edges
+    // Draw edges — colored by line_type
     networkData.edges.forEach(edge => {
         const u = networkData.nodes.find(n => n.id === edge.source);
         const v = networkData.nodes.find(n => n.id === edge.target);
-        
-        if (u && v) {
-            const color = edge.active ? getLineColor(edge.line) : '#333';
-            const weight = edge.active ? 3 : 1;
-            const opacity = edge.active ? 0.7 : 0.2;
+        if (!u || !v) return;
 
-            L.polyline([[u.lat, u.lon], [v.lat, v.lon]], {
-                color: color,
-                weight: weight,
-                opacity: opacity
-            }).addTo(map);
-        }
+        const active  = edge.active !== false;
+        const color   = active ? getLineTypeColor(edge.line_type) : INACTIVE_COLOR;
+        const weight  = active ? 3 : 1;
+        const opacity = active ? 0.75 : 0.15;
+
+        L.polyline([[u.lat, u.lon], [v.lat, v.lon]], { color, weight, opacity }).addTo(map);
     });
 
-    // Add node markers (only for important stations or on zoom)
+    // Draw station markers
     networkData.nodes.forEach(node => {
         const marker = L.circleMarker([node.lat, node.lon], {
             radius: 4,
-            fillColor: '#fff',
-            color: '#000',
+            fillColor: '#ffffff',
+            color: '#00000040',
             weight: 1,
-            opacity: 1,
-            fillOpacity: 0.8
+            fillOpacity: 0.9
         }).addTo(map);
 
-        marker.bindPopup(`<b>${node.name}</b><br>ID: ${node.id}`);
-        
-        marker.on('click', () => {
-            selectNode(node);
-        });
-
+        marker.bindPopup(
+            `<b style="font-family:Inter,sans-serif;">${node.name}</b>` +
+            `<br><span style="font-size:0.8em;color:#888;">ID: ${node.id}</span>`
+        );
+        marker.on('click', () => selectNode(node));
         markers[node.id] = marker;
     });
 }
 
+// ===== Selection =====
 function selectNode(node) {
     if (!selectedStart) {
         selectedStart = node;
         document.getElementById('startInfo').innerText = node.name;
-        markers[node.id].setStyle({ fillColor: '#2ecc71', radius: 8 });
+        markers[node.id].setStyle({ fillColor: '#28a745', radius: 9, weight: 2 });
+
     } else if (!selectedEnd) {
         selectedEnd = node;
         document.getElementById('endInfo').innerText = node.name;
-        markers[node.id].setStyle({ fillColor: '#e74c3c', radius: 8 });
+        markers[node.id].setStyle({ fillColor: PATH_COLOR, radius: 9, weight: 2 });
         findPath();
+
     } else {
-        // Reset
         resetSelection();
         selectedStart = node;
         document.getElementById('startInfo').innerText = node.name;
-        markers[node.id].setStyle({ fillColor: '#2ecc71', radius: 8 });
+        markers[node.id].setStyle({ fillColor: '#28a745', radius: 9, weight: 2 });
     }
 }
 
 function resetSelection() {
-    if (selectedStart) markers[selectedStart.id].setStyle({ fillColor: '#fff', radius: 4 });
-    if (selectedEnd) markers[selectedEnd.id].setStyle({ fillColor: '#fff', radius: 4 });
+    if (selectedStart && markers[selectedStart.id])
+        markers[selectedStart.id].setStyle({ fillColor: '#ffffff', radius: 4, weight: 1 });
+    if (selectedEnd && markers[selectedEnd.id])
+        markers[selectedEnd.id].setStyle({ fillColor: '#ffffff', radius: 4, weight: 1 });
+
     selectedStart = null;
-    selectedEnd = null;
-    document.getElementById('startInfo').innerText = '—';
-    document.getElementById('endInfo').innerText = '—';
-    if (pathLayer) pathLayer.remove();
+    selectedEnd   = null;
+    document.getElementById('startInfo').innerText = '\u2014';
+    document.getElementById('endInfo').innerText   = '\u2014';
+    document.getElementById('distInfo').innerText  = '\u2014';
+
+    if (pathLayer) { pathLayer.remove(); pathLayer = null; }
+
+    // Clear itinerary
+    const box = document.getElementById('route-details-box');
+    if (box) box.style.display = 'none';
+    const steps = document.getElementById('route-steps');
+    if (steps) steps.innerHTML = '';
 }
 
+// ===== Path Finding =====
 async function findPath() {
     if (!selectedStart || !selectedEnd) return;
 
     const result = await TransitAPI.findPath(selectedStart.id, selectedEnd.id);
-    
+
     if (result.success) {
         const pathCoords = [];
         result.details.forEach(step => {
             const u = networkData.nodes.find(n => n.id === step.from);
-            pathCoords.push([u.lat, u.lon]);
+            if (u) pathCoords.push([u.lat, u.lon]);
         });
-        const lastNode = networkData.nodes.find(n => n.id === result.path[result.path.length-1]);
-        pathCoords.push([lastNode.lat, lastNode.lon]);
+        const lastNode = networkData.nodes.find(n => n.id === result.path[result.path.length - 1]);
+        if (lastNode) pathCoords.push([lastNode.lat, lastNode.lon]);
 
         if (pathLayer) pathLayer.remove();
         pathLayer = L.polyline(pathCoords, {
-            color: '#f1c40f',
+            color: PATH_COLOR,
             weight: 6,
-            opacity: 0.9,
-            dashArray: '10, 10'
+            opacity: 0.95,
+            dashArray: '12, 8',
+            lineJoin: 'round',
+            lineCap: 'round'
         }).addTo(map);
 
-        map.fitBounds(pathLayer.getBounds());
-        
-        document.getElementById('distInfo').innerText = (result.total_distance / 1000).toFixed(2) + ' km';
+        map.fitBounds(pathLayer.getBounds(), { padding: [40, 40] });
+        document.getElementById('distInfo').innerText =
+            (result.total_distance / 1000).toFixed(2) + ' km';
+
+        // Render itinerary
+        renderItinerary(result.details);
     } else {
-        alert("No path found: " + result.error);
+        alert('Kh\u00f4ng t\u00ecm th\u1ea5y \u0111\u01b0\u1eddng \u0111i: ' + (result.error || 'L\u1ed7i kh\u00f4ng x\u00e1c \u0111\u1ecbnh'));
     }
 }
 
+// ===== Itinerary Renderer =====
+function classifyLine(lineName) {
+    if (!lineName || lineName === 'Unknown Line') return 'sub';
+    const n = parseInt(lineName, 10);
+    if (isNaN(n)) return 'rail';          // named lines (Innenstadttunnel, SB-Nord …)
+    if (n >= 1 && n <= 99) return 'sub'; // KVB Stadtbahn
+    return 'train';                       // 4-digit regional
+}
+
+const TYPE_LABEL = { rail: 'Rail', sub: 'Sub', train: 'Train' };
+const TYPE_ICON  = { rail: '\uD83D\uDEE4', sub: '\uD83D\uDE87', train: '\uD83D\uDE86' };
+
+function renderItinerary(details) {
+    const box   = document.getElementById('route-details-box');
+    const steps = document.getElementById('route-steps');
+    if (!box || !steps) return;
+
+    // Group consecutive steps with the same line into segments
+    const segments = [];
+    let cur = null;
+
+    details.forEach(step => {
+        const line = step.line || 'Unknown Line';
+        if (!cur || cur.line !== line) {
+            cur = {
+                line,
+                type: classifyLine(line),
+                from_name: step.from_name || `ID ${step.from}`,
+                to_name:   step.to_name   || `ID ${step.to}`,
+                distance:  step.distance || 0,
+                stops: 1
+            };
+            segments.push(cur);
+        } else {
+            cur.to_name  = step.to_name || `ID ${step.to}`;
+            cur.distance += (step.distance || 0);
+            cur.stops++;
+        }
+    });
+
+    steps.innerHTML = '';
+    segments.forEach((seg, idx) => {
+        const color = LINE_COLORS[seg.type] || LINE_COLORS.sub;
+        const km    = (seg.distance / 1000).toFixed(2);
+
+        // Segment block — colored header + station list
+        const el = document.createElement('div');
+        el.className = 'route-step';
+        el.style.setProperty('--seg-color', color);
+        el.innerHTML = `
+            <div class="step-header" style="background:${color};">
+                <span class="step-type-icon">${TYPE_ICON[seg.type]}</span>
+                <span class="step-line-name">${TYPE_LABEL[seg.type]} &bull; Tuy&#7871;n ${seg.line}</span>
+                <span class="step-km">${km} km</span>
+            </div>
+            <div class="step-route">
+                <div class="step-station step-from">
+                    <span class="step-dot dot-green"></span>
+                    <span>${seg.from_name}</span>
+                </div>
+                <div class="step-midline" style="border-color:${color};"></div>
+                <div class="step-station step-to">
+                    <span class="step-dot dot-red"></span>
+                    <span>${seg.to_name}</span>
+                </div>
+            </div>
+        `;
+        steps.appendChild(el);
+    });
+
+    box.style.display = 'block';
+}
+
+
+// ===== Admin Line Controls — grouped by type =====
 async function loadLineControls() {
     const linesData = await TransitAPI.getLines();
     const container = document.getElementById('line-controls');
     container.innerHTML = '';
 
+    if (!linesData.all_lines || linesData.all_lines.length === 0) {
+        container.innerHTML = '<p style="font-size:0.78rem;color:var(--text-subtle);text-align:center;padding:12px 0;">Không có tuyến nào.</p>';
+        return;
+    }
+
+    // Group by type
+    const groups = { rail: [], sub: [], train: [] };
     linesData.all_lines.forEach(line => {
-        const div = document.createElement('div');
-        div.className = 'line-item';
-        const isDisabled = linesData.disabled_lines.includes(line);
-        
-        div.innerHTML = `
-            <span>${line}</span>
-            <label class="switch">
-                <input type="checkbox" ${isDisabled ? '' : 'checked'} onchange="toggleLine('${line}', this.checked)">
-                <span class="slider round"></span>
-            </label>
-        `;
-        container.appendChild(div);
+        const t = line.type || 'sub';
+        if (groups[t]) groups[t].push(line);
     });
+
+    const groupMeta = {
+        rail:  { label: '🛤 Rail',  color: LINE_COLORS.rail,  desc: 'Đường sắt khu vực' },
+        sub:   { label: '🚇 Sub',   color: LINE_COLORS.sub,   desc: 'KVB Stadtbahn' },
+        train: { label: '🚆 Train', color: LINE_COLORS.train, desc: 'Tàu vùng (Regional)' },
+    };
+
+    ['rail', 'sub', 'train'].forEach(type => {
+        const lines = groups[type];
+        if (lines.length === 0) return;
+
+        const meta = groupMeta[type];
+
+        // Group header
+        const header = document.createElement('div');
+        header.className = 'line-group-header';
+        header.innerHTML = `
+            <span class="group-dot" style="background:${meta.color};box-shadow:0 0 8px ${meta.color}88;"></span>
+            <span class="group-label">${meta.label}</span>
+            <span class="group-desc">${meta.desc} (${lines.length})</span>
+            <button class="btn-group-toggle" onclick="toggleGroup('${type}', this)">▼</button>
+        `;
+        container.appendChild(header);
+
+        // Line items wrapper
+        const wrapper = document.createElement('div');
+        wrapper.className = 'line-group-items';
+        wrapper.id = `group-${type}`;
+
+        lines.forEach(line => {
+            const isDisabled = linesData.disabled_lines.includes(line.name);
+            const div = document.createElement('div');
+            div.className = 'line-item';
+            div.innerHTML = `
+                <div class="line-label">
+                    <div class="line-dot" style="background:${meta.color};"></div>
+                    <span>${line.name}</span>
+                </div>
+                <label class="switch">
+                    <input type="checkbox" ${isDisabled ? '' : 'checked'}
+                           onchange="toggleLine('${line.name}', this.checked)">
+                    <span class="slider"></span>
+                </label>
+            `;
+            wrapper.appendChild(div);
+        });
+
+        container.appendChild(wrapper);
+    });
+}
+
+// Collapse/expand a group
+function toggleGroup(type, btn) {
+    const wrapper = document.getElementById(`group-${type}`);
+    const collapsed = wrapper.classList.toggle('collapsed');
+    btn.textContent = collapsed ? '▶' : '▼';
 }
 
 async function toggleLine(lineName, active) {
@@ -157,21 +333,3 @@ async function toggleLine(lineName, active) {
     await refreshNetwork();
     if (selectedStart && selectedEnd) findPath();
 }
-
-function getLineColor(line) {
-    if (!line) return '#999';
-    // Cologne KVB Colors (simplified)
-    if (line.startsWith('1')) return '#ed1c24';
-    if (line.startsWith('3') || line.startsWith('4')) return '#f68b1e';
-    if (line.startsWith('5')) return '#92278f';
-    if (line.startsWith('7')) return '#f58220';
-    if (line.startsWith('9')) return '#f9ad81';
-    if (line.startsWith('12')) return '#00a651';
-    if (line.startsWith('15')) return '#00a651';
-    if (line.startsWith('16')) return '#0072bc';
-    if (line.startsWith('18')) return '#0072bc';
-    if (line.startsWith('S')) return '#00964b'; // S-Bahn
-    return '#' + Math.floor(Math.random()*16777215).toString(16);
-}
-
-// initCologneMap is called from index.html with loading overlay handling

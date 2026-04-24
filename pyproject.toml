@@ -1,0 +1,17 @@
+[project]
+name = "cologne-transit-ai"
+version = "0.1.0"
+description = "Cologne KVB Transit Pathfinding System"
+requires-python = ">=3.10"
+dependencies = [
+    "flask",
+    "flask-cors",
+    "osmnx",
+    "networkx",
+    "geopandas",
+    "pandas",
+    "matplotlib",
+]
+
+[tool.uv]
+dev-dependencies = []

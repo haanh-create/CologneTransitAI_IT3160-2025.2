@@ -1,3 +1,4 @@
+import heapq
 import networkx as nx
 import json
 import os
@@ -10,6 +11,23 @@ def _normalize_line(line):
     if isinstance(line, list):
         return [str(l) for l in line]
     return [str(line)]
+
+
+def classify_line(line_name):
+    """Classify a line name into 'rail', 'sub', or 'train'.
+    - rail  : named lines (SB-*, Nord-Süd-Stadtbahn, Innenstadttunnel, ...)
+    - sub   : numeric 1-99  (KVB Stadtbahn / light-rail, e.g. 18, 20 ...)
+    - train : numeric 4-digit (regional / S-Bahn, e.g. 2600, 7454 ...)
+    """
+    if not line_name or line_name == 'Unknown Line':
+        return 'sub'          # default fallback
+    try:
+        n = int(line_name)
+        if 1 <= n <= 99:
+            return 'sub'
+        return 'train'
+    except ValueError:
+        return 'rail'
 
 
 class TransitEngine:
@@ -52,11 +70,15 @@ class TransitEngine:
         return all(line in self.disabled_lines for line in lines)
 
     def get_all_lines(self):
-        lines = set()
+        """Return sorted list of dicts: {name, type} for each unique line."""
+        lines = {}
         for u, v, data in self.graph.edges(data=True):
             for line in _normalize_line(data.get('line')):
-                lines.add(line)
-        return sorted(list(lines))
+                if line not in lines:
+                    lines[line] = classify_line(line)
+        result = [{'name': name, 'type': ltype} for name, ltype in lines.items()]
+        result.sort(key=lambda x: (x['type'], x['name']))
+        return result
 
     def toggle_line(self, line_name, disabled=True):
         if disabled:
@@ -66,47 +88,115 @@ class TransitEngine:
         return list(self.disabled_lines)
 
     def find_path(self, start_node_id, end_node_id):
-        # Filtered graph — exclude edges where ALL lines are disabled
-        active_edges = [
-            (u, v, d) for u, v, d in self.graph.edges(data=True)
-            if not self._is_edge_disabled(d)
-        ]
+        """Shortest path with transfer penalty.
+        Adds TRANSFER_PENALTY meters to cost each time the line changes,
+        so paths with fewer line switches are preferred if distance is similar.
+        """
+        TRANSFER_PENALTY = 300  # metres — tolerate up to 300 m extra to avoid 1 transfer
+        INF = float('inf')
 
-        sub_graph = nx.Graph()
-        sub_graph.add_nodes_from(self.graph.nodes(data=True))
-        sub_graph.add_edges_from(active_edges)
+        if start_node_id == end_node_id:
+            return {"success": True, "path": [start_node_id], "details": [], "total_distance": 0}
 
-        try:
-            path = nx.shortest_path(sub_graph, source=start_node_id, target=end_node_id, weight='weight')
+        # Build adjacency list restricted to active edges
+        # adj[node] = [(neighbor, line, length, edge_data), ...]
+        adj = {}
+        for u, v, d in self.graph.edges(data=True):
+            if self._is_edge_disabled(d):
+                continue
+            lines = _normalize_line(d.get('line')) or ['__unknown__']
+            length = d.get('length', 0)
+            for line in lines:
+                adj.setdefault(u, []).append((v, line, length, d))
+                adj.setdefault(v, []).append((u, line, length, d))
 
-            # Construct path details
-            path_details = []
-            total_distance = 0
-            for i in range(len(path) - 1):
-                u, v = path[i], path[i + 1]
-                edge_data = self.graph.get_edge_data(u, v)
-                dist = edge_data.get('length', 0)
-                total_distance += dist
-                lines = _normalize_line(edge_data.get('line'))
-                path_details.append({
-                    "from": u,
-                    "to": v,
-                    "line": lines[0] if lines else None,
-                    "distance": dist,
-                    "from_name": self.graph.nodes[u].get('name'),
-                    "to_name": self.graph.nodes[v].get('name')
-                })
+        # State: (node_id, current_line)
+        # heap entry: (cost, counter, node, current_line)
+        dist = {}   # state -> penalised cost
+        prev = {}   # state -> (prev_node, prev_line, edge_data, used_line)
+        counter = 0
+        heap = []
 
-            return {
-                "success": True,
-                "path": path,
-                "details": path_details,
-                "total_distance": total_distance
-            }
-        except nx.NetworkXNoPath:
+        # Seed: one entry per line available at start node
+        start_lines = {ln for (_, ln, _, _) in adj.get(start_node_id, [])}
+        if not start_lines:
+            return {"success": False, "error": "Start node has no active connections"}
+
+        for line in start_lines:
+            state = (start_node_id, line)
+            dist[state] = 0
+            prev[state] = None
+            heapq.heappush(heap, (0, counter, start_node_id, line))
+            counter += 1
+
+        visited = set()
+
+        while heap:
+            cost, _, node, cur_line = heapq.heappop(heap)
+            state = (node, cur_line)
+            if state in visited:
+                continue
+            visited.add(state)
+
+            if node == end_node_id:
+                break
+
+            for nbr, next_line, length, edge_data in adj.get(node, []):
+                penalty = TRANSFER_PENALTY if next_line != cur_line else 0
+                new_cost = cost + length + penalty
+                nstate = (nbr, next_line)
+                if new_cost < dist.get(nstate, INF):
+                    dist[nstate] = new_cost
+                    prev[nstate] = (node, cur_line, edge_data, next_line)
+                    heapq.heappush(heap, (new_cost, counter, nbr, next_line))
+                    counter += 1
+
+        # Pick the best arriving state at end_node
+        best_cost = INF
+        best_state = None
+        for (node, line), c in dist.items():
+            if node == end_node_id and c < best_cost:
+                best_cost = c
+                best_state = (node, line)
+
+        if best_state is None:
             return {"success": False, "error": "No path found (lines might be disabled)"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+
+        # Reconstruct path backwards
+        details = []
+        path_nodes = []
+        state = best_state
+
+        while state is not None and prev.get(state) is not None:
+            node, line = state
+            prev_node, prev_line, edge_data, used_line = prev[state]
+            length = edge_data.get('length', 0)
+            details.append({
+                "from":      prev_node,
+                "to":        node,
+                "line":      None if used_line == '__unknown__' else used_line,
+                "distance":  length,
+                "from_name": self.graph.nodes[prev_node].get('name'),
+                "to_name":   self.graph.nodes[node].get('name'),
+            })
+            path_nodes.append(node)
+            state = (prev_node, prev_line)
+
+        if state:
+            path_nodes.append(state[0])
+
+        path_nodes.reverse()
+        details.reverse()
+
+        total_distance = sum(d['distance'] for d in details)
+        return {
+            "success": True,
+            "path": path_nodes,
+            "details": details,
+            "total_distance": total_distance,
+        }
+
+
 
     def get_network_data(self):
         """Return nodes and edges for visualization."""
@@ -117,13 +207,13 @@ class TransitEngine:
         edges = []
         for u, v, data in self.graph.edges(data=True):
             lines = _normalize_line(data.get('line'))
-            # Use the first line name for display; edge is active if any line is active
             display_line = lines[0] if lines else None
             active = not self._is_edge_disabled(data)
             edges.append({
                 "source": u,
                 "target": v,
                 "line": display_line,
+                "line_type": classify_line(display_line),
                 "length": data.get('length'),
                 "active": active
             })

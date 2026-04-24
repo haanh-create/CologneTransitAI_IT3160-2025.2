@@ -1,118 +1,367 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="vi" data-theme="dark">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Cologne Transit Pathfinding - AI Project</title>
-    
+    <title>Cologne Transit AI — Pathfinding</title>
+    <meta name="description" content="Tìm đường đi ngắn nhất trên mạng lưới giao thông Cologne (KVB)">
+
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
-    
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
     <style>
+        /* ===== Design Tokens ===== */
         :root {
-            --primary: #e74c3c;
-            --dark: #2c3e50;
-            --light: #ecf0f1;
-            --accent: #f1c40f;
-            --success: #2ecc71;
+            --rail-color:   #00c853;   /* Rail  — lục đậm  */
+            --sub-color:    #69f0ae;   /* Sub   — xanh lá nhạt */
+            --train-color:  #ffd600;   /* Train — vàng     */
+            --path-color:   #f44336;   /* Đường ngắn nhất — đỏ */
+
+            --radius-sm: 8px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+
+            --transition: 0.25s ease;
+            --shadow-lg: 0 12px 40px rgba(0,0,0,0.4);
         }
+
+        /* Dark theme */
+        [data-theme="dark"] {
+            --bg-app:      #0d1117;
+            --bg-panel:    rgba(22, 27, 34, 0.96);
+            --bg-card:     rgba(255,255,255,0.05);
+            --bg-item:     rgba(255,255,255,0.04);
+            --bg-header:   #161b22;
+            --border:      rgba(255,255,255,0.08);
+            --text-primary: #e6edf3;
+            --text-muted:   #8b949e;
+            --text-subtle:  #484f58;
+            --accent:       #58a6ff;
+            --btn-bg:       #21262d;
+            --btn-hover:    #30363d;
+            --switch-off:   #3d444d;
+            --switch-on:    #238636;
+        }
+
+        /* Light theme */
+        [data-theme="light"] {
+            --bg-app:      #f0f2f5;
+            --bg-panel:    rgba(255, 255, 255, 0.97);
+            --bg-card:     rgba(0,0,0,0.04);
+            --bg-item:     rgba(0,0,0,0.03);
+            --bg-header:   #ffffff;
+            --border:      rgba(0,0,0,0.08);
+            --text-primary: #1c1e21;
+            --text-muted:   #606770;
+            --text-subtle:  #adb5bd;
+            --accent:       #0066cc;
+            --btn-bg:       #e9ecef;
+            --btn-hover:    #d0d7de;
+            --switch-off:   #ced4da;
+            --switch-on:    #2da44e;
+        }
+
+        /* ===== Reset & Base ===== */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
         body {
-            margin: 0;
             font-family: 'Inter', sans-serif;
-            background: #1a1a1a;
-            color: white;
+            background: var(--bg-app);
+            color: var(--text-primary);
+            display: flex;
+            height: 100vh;
             overflow: hidden;
+            transition: background var(--transition), color var(--transition);
         }
 
+        /* ===== Map ===== */
         #map {
+            flex: 1;
             height: 100vh;
-            width: 100%;
+            min-width: 0;
             z-index: 1;
         }
 
+        /* ===== Side Panel ===== */
         .side-panel {
-            position: absolute;
-            top: 20px;
-            left: 20px;
+            position: relative;
             width: 320px;
-            background: rgba(44, 62, 80, 0.95);
-            backdrop-filter: blur(10px);
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-            z-index: 1000;
-            max-height: 90vh;
+            flex-shrink: 0;
+            height: 100vh;
+            background: var(--bg-panel);
+            border-right: 1px solid var(--border);
+            box-shadow: 4px 0 24px rgba(0,0,0,0.25);
+            z-index: 100;
             display: flex;
             flex-direction: column;
-            border: 1px solid rgba(255,255,255,0.1);
+            transition: background var(--transition), border-color var(--transition);
+            overflow: hidden;
         }
 
+        /* ===== Panel Header ===== */
         .panel-header {
-            padding: 20px;
-            background: var(--primary);
-            border-radius: 12px 12px 0 0;
-            font-weight: 700;
-            font-size: 1.2rem;
+            padding: 16px 20px;
+            background: var(--bg-header);
+            border-bottom: 1px solid var(--border);
             display: flex;
             justify-content: space-between;
             align-items: center;
+            gap: 8px;
+            flex-shrink: 0;
         }
 
-        .panel-content {
-            padding: 20px;
-            overflow-y: auto;
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
         }
 
-        .section-title {
-            text-transform: uppercase;
-            font-size: 0.75rem;
-            letter-spacing: 1px;
-            color: #bdc3c7;
-            margin-bottom: 15px;
-            margin-top: 20px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-            padding-bottom: 5px;
-        }
-
-        .info-card {
-            background: rgba(255,255,255,0.05);
-            padding: 15px;
+        .logo-dot {
+            width: 28px; height: 28px;
             border-radius: 8px;
+            background: linear-gradient(135deg, #f44336, #e91e63);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+
+        .header-text h1 {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--text-primary);
+            line-height: 1.2;
+        }
+
+        .header-text p {
+            font-size: 0.65rem;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        /* Theme toggle button */
+        #theme-toggle {
+            background: var(--btn-bg);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            width: 32px; height: 32px;
+            border-radius: 8px;
+            cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 15px;
+            transition: background var(--transition), border-color var(--transition);
+            flex-shrink: 0;
+        }
+
+        #theme-toggle:hover { background: var(--btn-hover); }
+
+        /* ===== Panel Content ===== */
+        .panel-content {
+            padding: 16px;
+            overflow-y: auto;
+            flex: 1;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .panel-content::-webkit-scrollbar { width: 4px; }
+        .panel-content::-webkit-scrollbar-track { background: transparent; }
+        .panel-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        /* ===== Section Title ===== */
+        .section-title {
+            font-size: 0.65rem;
+            font-weight: 600;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            color: var(--text-muted);
             margin-bottom: 10px;
+            margin-top: 16px;
+        }
+
+        .section-title:first-child { margin-top: 0; }
+
+        /* ===== Info Card ===== */
+        .info-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 14px;
+            border-radius: var(--radius-md);
+            margin-bottom: 4px;
         }
 
         .info-row {
             display: flex;
             justify-content: space-between;
-            margin-bottom: 8px;
-            font-size: 0.9rem;
+            align-items: center;
+            padding: 4px 0;
+            font-size: 0.82rem;
         }
 
-        .info-label { color: #95a5a6; }
-        .info-value { font-weight: 600; color: var(--accent); }
+        .info-row + .info-row {
+            border-top: 1px solid var(--border);
+            margin-top: 4px;
+            padding-top: 8px;
+        }
 
-        /* Admin Controls */
+        .info-label { color: var(--text-muted); font-weight: 400; }
+
+        .info-value {
+            font-weight: 600;
+            color: var(--accent);
+            font-size: 0.85rem;
+            max-width: 160px;
+            text-align: right;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .info-value.path-result { color: var(--path-color); }
+
+        /* Station badge */
+        .station-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.72rem;
+            padding: 2px 8px;
+            border-radius: 20px;
+            font-weight: 600;
+        }
+
+        .badge-start { background: rgba(40,167,69,0.15); color: #28a745; border: 1px solid rgba(40,167,69,0.3); }
+        .badge-end   { background: rgba(244,67,54,0.15);  color: var(--path-color); border: 1px solid rgba(244,67,54,0.3); }
+
+        /* Reset button */
+        .btn-reset {
+            width: 100%;
+            padding: 9px 14px;
+            background: var(--btn-bg);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            margin-top: 10px;
+            font-size: 0.8rem;
+            font-weight: 500;
+            font-family: 'Inter', sans-serif;
+            transition: background var(--transition), border-color var(--transition);
+            display: flex; align-items: center; justify-content: center; gap: 6px;
+        }
+
+        .btn-reset:hover { background: var(--btn-hover); }
+
+        /* ===== Line Controls ===== */
         #line-controls {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
         }
 
         .line-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            background: rgba(0,0,0,0.2);
+            background: var(--bg-item);
+            border: 1px solid var(--border);
             padding: 8px 12px;
-            border-radius: 6px;
+            border-radius: var(--radius-sm);
+            transition: background var(--transition);
         }
 
-        /* Switch Styling */
+        .line-item:hover { background: var(--bg-card); }
+
+        .line-label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.82rem;
+            font-weight: 500;
+        }
+
+        .line-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        /* ===== Line Groups ===== */
+        .line-group-header {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 7px 10px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            margin-top: 6px;
+            cursor: default;
+        }
+
+        .group-dot {
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .group-label {
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .group-desc {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            flex: 1;
+        }
+
+        .btn-group-toggle {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 0.65rem;
+            padding: 2px 4px;
+            border-radius: 4px;
+            transition: background var(--transition);
+        }
+
+        .btn-group-toggle:hover { background: var(--btn-bg); }
+
+        .line-group-items {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding-left: 8px;
+            /* Collapsed: hide via max-height animation */
+            max-height: 180px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            transition: max-height 0.3s ease, opacity 0.2s ease;
+            opacity: 1;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .line-group-items::-webkit-scrollbar { width: 3px; }
+        .line-group-items::-webkit-scrollbar-track { background: transparent; }
+        .line-group-items::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .line-group-items.collapsed {
+            max-height: 0 !important;
+            opacity: 0;
+            overflow: hidden;
+        }
+
+
+
         .switch {
             position: relative;
             display: inline-block;
-            width: 40px;
+            width: 36px;
             height: 20px;
+            flex-shrink: 0;
         }
 
         .switch input { opacity: 0; width: 0; height: 0; }
@@ -120,9 +369,9 @@
         .slider {
             position: absolute;
             cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #555;
-            transition: .4s;
+            inset: 0;
+            background-color: var(--switch-off);
+            transition: .3s;
             border-radius: 20px;
         }
 
@@ -131,92 +380,261 @@
             content: "";
             height: 14px; width: 14px;
             left: 3px; bottom: 3px;
-            background-color: white;
-            transition: .4s;
+            background-color: #fff;
+            transition: .3s;
             border-radius: 50%;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
         }
 
-        input:checked + .slider { background-color: var(--success); }
-        input:checked + .slider:before { transform: translateX(20px); }
+        input:checked + .slider { background-color: var(--switch-on); }
+        input:checked + .slider:before { transform: translateX(16px); }
 
-        .btn-reset {
-            width: 100%;
-            padding: 10px;
-            background: #34495e;
-            border: none;
-            color: white;
-            border-radius: 6px;
-            cursor: pointer;
-            margin-top: 10px;
+        /* ===== Legend ===== */
+        .legend-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+        }
+
+        .legend-line {
+            width: 22px; height: 4px;
+            border-radius: 2px;
+            flex-shrink: 0;
+        }
+
+        .legend-path {
+            width: 22px; height: 4px;
+            border-radius: 2px;
+            flex-shrink: 0;
+            background: repeating-linear-gradient(90deg, var(--path-color) 0, var(--path-color) 6px, transparent 6px, transparent 10px);
+        }
+
+        /* ===== Hint Text ===== */
+        .hint-text {
+            font-size: 0.7rem;
+            color: var(--text-subtle);
+            line-height: 1.6;
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: var(--bg-item);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+        }
+
+        /* ===== Route Itinerary ===== */
+        .route-steps-container {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .route-step {
+            background: var(--bg-app);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        /* Solid colored header bar */
+        .step-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 7px 10px;
+            color: #fff;
+            font-size: 0.82rem;
+            font-weight: 700;
+        }
+
+        /* Yellow train — use dark text for contrast */
+        .step-header[style*="#ffd600"] {
+            color: #1a1a1a;
+        }
+
+        .step-type-icon { font-size: 1rem; line-height: 1; flex-shrink: 0; }
+
+        .step-line-name { flex: 1; }
+
+        .step-km {
+            font-size: 0.7rem;
             font-weight: 600;
-            transition: 0.3s;
+            opacity: 0.85;
+            white-space: nowrap;
         }
 
-        .btn-reset:hover { background: #455a64; }
+        .step-route {
+            padding: 8px 10px 8px 14px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            background: var(--bg-card);
+        }
 
+        .step-station {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.78rem;
+            color: var(--text-primary);
+            padding: 3px 0;
+        }
+
+        .step-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            border: 1.5px solid rgba(255,255,255,0.3);
+        }
+
+        .dot-green { background: #28a745; }
+        .dot-red   { background: var(--path-color); }
+
+        .step-midline {
+            width: 0;
+            height: 14px;
+            border-left: 2px solid;
+            margin-left: 3px;
+            opacity: 0.5;
+        }
+
+
+
+        /* ===== Loading Overlay ===== */
         #loading-overlay {
             position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
+            inset: 0;
+            background: rgba(13,17,23,0.92);
             display: flex;
             justify-content: center;
             align-items: center;
             z-index: 9999;
             flex-direction: column;
+            gap: 16px;
+            backdrop-filter: blur(4px);
+        }
+
+        [data-theme="light"] #loading-overlay {
+            background: rgba(240,242,245,0.92);
         }
 
         .spinner {
-            width: 50px; height: 50px;
-            border: 5px solid #333;
-            border-top: 5px solid var(--primary);
+            width: 44px; height: 44px;
+            border: 3px solid var(--border);
+            border-top: 3px solid var(--path-color);
             border-radius: 50%;
-            animation: spin 1s linear infinite;
+            animation: spin 0.9s linear infinite;
         }
 
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .loading-text {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        @keyframes spin {
+            0%   { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* ===== Responsive ===== */
+        @media (max-width: 360px) {
+            .side-panel { width: calc(100vw - 32px); }
+        }
     </style>
 </head>
 
 <body>
+    <!-- Loading Overlay -->
     <div id="loading-overlay">
         <div class="spinner"></div>
-        <p style="margin-top: 20px;">Đang tải dữ liệu mạng lưới...</p>
+        <p class="loading-text">Đang tải dữ liệu mạng lưới...</p>
     </div>
 
+    <!-- Side Panel -->
     <div class="side-panel">
         <div class="panel-header">
-            <span>Köln Transit AI</span>
-            <span style="font-size: 0.8rem; opacity: 0.8;">Admin v1.0</span>
+            <div class="header-title">
+                <div class="logo-dot">🚇</div>
+                <div class="header-text">
+                    <h1>Köln Transit AI</h1>
+                    <p>KVB Pathfinding System</p>
+                </div>
+            </div>
+            <button id="theme-toggle" title="Chuyển sáng/tối" onclick="toggleTheme()">🌙</button>
         </div>
-        
+
         <div class="panel-content">
-            <div class="section-title">Tìm đường đi</div>
+            <!-- Path Finder -->
+            <div class="section-title">🗺 Tìm đường đi ngắn nhất</div>
             <div class="info-card">
                 <div class="info-row">
-                    <span class="info-label">Điểm đi:</span>
+                    <span class="info-label"><span class="station-badge badge-start">▶ Điểm đi</span></span>
                     <span id="startInfo" class="info-value">—</span>
                 </div>
                 <div class="info-row">
-                    <span class="info-label">Điểm đến:</span>
+                    <span class="info-label"><span class="station-badge badge-end">▶ Điểm đến</span></span>
                     <span id="endInfo" class="info-value">—</span>
                 </div>
-                <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;">
                 <div class="info-row">
-                    <span class="info-label">Tổng khoảng cách:</span>
-                    <span id="distInfo" class="info-value">—</span>
+                    <span class="info-label">Khoảng cách</span>
+                    <span id="distInfo" class="info-value path-result">—</span>
                 </div>
-                <button class="btn-reset" onclick="resetSelection()">Xóa chọn điểm</button>
+                <button class="btn-reset" onclick="resetSelection()">
+                    <span>✕</span> Xóa chọn điểm
+                </button>
             </div>
 
-            <div class="section-title">Quản trị Tuyến (Admin)</div>
-            <div id="line-controls">
-                <!-- Lines will be populated here -->
-                <p style="font-size: 0.8rem; color: #777;">Đang tải danh sách tuyến...</p>
+            <!-- Route Itinerary -->
+            <div id="route-details-box" style="display:none;">
+                <div class="section-title">📍 Lộ trình chi tiết</div>
+                <div id="route-steps" class="route-steps-container"></div>
             </div>
-            
-            <p style="font-size: 0.7rem; color: #7f8c8d; margin-top: 20px; line-height: 1.4;">
-                * Click vào trạm trên bản đồ để chọn điểm đi/đến.<br>
-                * Gạt công tắc để vô hiệu hóa tuyến tàu.
+
+            <!-- Legend -->
+            <div class="section-title">🎨 Chú giải màu sắc</div>
+            <div class="info-card">
+                <div class="legend-grid">
+                    <div class="legend-item">
+                        <div class="legend-line" style="background: #0085c8;"></div>
+                        <span>Rail (đường sắt)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-line" style="background: #00c666;"></div>
+                        <span>Sub (tàu điện ngầm)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-line" style="background: #ffd600;"></div>
+                        <span>Train (xe lửa)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-path"></div>
+                        <span>Đường ngắn nhất</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Admin Line Controls -->
+            <div class="section-title">⚙ Quản trị tuyến (Admin)</div>
+            <div id="line-controls">
+                <p style="font-size: 0.78rem; color: var(--text-subtle); text-align: center; padding: 12px 0;">
+                    Đang tải danh sách tuyến...
+                </p>
+            </div>
+
+            <!-- Hint -->
+            <p class="hint-text">
+                💡 Click vào trạm trên bản đồ để chọn điểm đi/đến.<br>
+                🔄 Gạt công tắc để vô hiệu hóa/kích hoạt tuyến tàu.
             </p>
         </div>
     </div>
@@ -226,9 +644,32 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="js/api.js"></script>
     <script src="js/cologne_map.js"></script>
-    
+
     <script>
-        // Override window.onload to show loading overlay, then hide after init
+        // Theme management
+        const THEME_KEY = 'kvb-theme';
+
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            document.getElementById('theme-toggle').textContent = theme === 'dark' ? '☀️' : '🌙';
+            // Update map tiles
+            if (window._tileLayer && window._darkTile && window._lightTile) {
+                map.removeLayer(window._tileLayer);
+                window._tileLayer = theme === 'dark' ? window._darkTile : window._lightTile;
+                window._tileLayer.addTo(map);
+            }
+            localStorage.setItem(THEME_KEY, theme);
+        }
+
+        function toggleTheme() {
+            const current = document.documentElement.getAttribute('data-theme');
+            applyTheme(current === 'dark' ? 'light' : 'dark');
+        }
+
+        // Load saved theme
+        const savedTheme = localStorage.getItem(THEME_KEY) || 'dark';
+        applyTheme(savedTheme);
+
         window.onload = async function() {
             await initCologneMap();
             document.getElementById('loading-overlay').style.display = 'none';
